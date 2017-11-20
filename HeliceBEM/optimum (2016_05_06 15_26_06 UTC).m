@@ -1,0 +1,158 @@
+function [resglobal,data]=optimum(aerofolio,cte,parametro)
+%% Funcao que pega os dados do aerofolio e implementa o metodo descrito
+%  no artigo
+
+%% chamada de variaveis globais
+global Vo W  R r  Z ro visc vsom A lambda T P 
+
+%% inicializacao
+if(cte==1)
+      %pegar dados do aerofolio     
+            [alpha,CL,CD]=dados_aerof(200000,aerofolio);
+            %truncar em valores positivos
+            jj=find(alpha>=0,1);
+            CL=CL(jj:end);
+            alpha=alpha(jj:end);
+            CD=CD(jj:end);
+            E=CD./CL;
+            %achar o minimo Cd/Cl e colher os dados correspondentes
+            kk=find(E==min(E));
+            Cl=CL(kk);
+            Cd=CD(kk);
+            alpha=alpha(kk);
+            EE=Cd/Cl;
+end
+% calcular Tc e Pc dependendo de qual parametro de projeto for escolhido
+% Projeto de helice pela forca ou pela potencia
+if (parametro=='T')
+Tc=(2*T)/(ro*(Vo^2)*A); %coeficiente de tracao necessaria
+elseif(parametro=='P')
+Pc=(2*P)/(ro*(Vo^3)*A); %coeficiente de potencia disponivel
+end
+% epsilon_o=R_hub/R;
+% epsilon_e=1-1.386*lambda/Z;
+% qsi=0.5*Tc/(epsilon_e^2-epsilon_o^2);
+qsi=1; %iniciar qsi
+erro_qsi=10;%iniciar erro de qsi (qualquer coisa acima da tolerancia)
+epsilon=r./R; % vetor de raio adimensional para integracao(dividir todos os elementos de r por R)
+%% iteracao qsi
+
+while(erro_qsi>1e-3)%equanto erro de qsi for maior do que uma tolerancia(0,1%)
+    res=zeros(length(r),12);%iniciar matriz que retornará valores finais
+    der=zeros(length(r),4);%iniciar matriz que guardará as derivadas
+    %% calculo nas secoes
+    for i=1:1:length(r)% para cada secao....
+        eps=r(i)/R;%raio adimensional
+        tg_fi_t=lambda*(1+qsi/2);
+        fi_t=atan(tg_fi_t);%flow angle at the tip
+        tg_fi=tg_fi_t/eps;
+        fi=atan(tg_fi);%flow angle at section
+        f=((Z/2)*(1-eps))/sin(fi_t);%fator f da correcao de Prandtl de acordo com o artigo
+        F=(2/pi)*atan((exp(2*f)-1)^0.5);%fator F de Prandtl recomendado pelo artigo
+      
+        x=eps/lambda;% avanco local (da secao)
+        G=F*x*cos(fi)*sin(fi);%circulation function
+        if (cte==0)
+            [Wc,Re,Cl,Cd,alpha,EE]=Reynolds(G,qsi,aerofolio);
+        else
+            Wc=(4*pi*lambda*G*Vo*R*qsi)/(Cl.*Z);%velocidade relativa vezes a corda
+            Re=Wc/visc;%numero de Reynolds
+        end
+        a=(qsi/2)*(cos(fi)^2)*(1-EE*tan(fi));%fator de inducao axial
+        a_l=(qsi/(2*x))*cos(fi)*sin(fi)*(1+EE/tan(fi));%fator de inducao tangencial
+        Vrel=(Vo*(1+a))/sin(fi);%Velocidade relativa
+        
+        c=Wc/Vrel;% calculo do comprimento de corda correspondente
+        twist=alpha+fi*180/pi; % calculo da torcao (alfa+fi)
+        L_D=Cl/Cd;% razao lift/drag
+        Ma=Vrel/vsom;%numero de Mach
+        %derivadas
+        I1_l=4*eps*G*(1-EE*tan(fi));
+        I2_l=lambda*(I1_l/(2*eps))*(1+EE/tan(fi))*sin(fi)*cos(fi);
+        J1_l=4*eps*G*(1+EE/tan(fi));
+        J2_l=(J1_l/2)*(1-EE*tan(fi))*cos(fi)^2;
+        %armazenar valores na i-esima linha de res-respectivamente:
+        %numero da secao,raio da secao,corda,torcao,angulo de escoamento, Cl,razao
+        %lift/drag,Reynolds,Mach,fatores de inducao e velocidade relativa
+        res(i,:)=[i r(i) c twist fi*180/pi Cl L_D Re/1000 Ma a a_l Vrel];
+        %armazenar derivadas na i-esima linha de der
+        der(i,:)=[I1_l I2_l J1_l J2_l];
+    end%fim da iteracao para cada secao
+    % organizar os dados resultados do estudo de todas as secoes
+    
+    %zerar integrais
+    I1=0;
+    I2=0;
+    J1=0;
+    J2=0;
+    %% integracao
+    %integrate from eps0 to eps1
+    for i=1:1:length(epsilon)-1 % para cada intervalo do raio admensional...
+        %aqui se calcula a equacao de reta entre cada intervalo, a integral
+        %e se acumula em soma
+        %I1
+        %coeficiente angular
+        AAI1=(der(i+1,1)-der(i,1))/(epsilon(i+1)-epsilon(i));
+        %coeficiente linear
+        BBI1=(der(i,1)*epsilon(i+1)-der(i+1,1)*epsilon(i))/(epsilon(i+1)-epsilon(i));
+        %integral
+        auxI1=0.5*AAI1*(epsilon(i+1)^2-epsilon(i)^2)+BBI1*(epsilon(i+1)-epsilon(i));
+        %acumular a soma...
+        I1=I1+auxI1;
+        %de maneira similar para os outros parametros:
+        %I2
+        AAI2=(der(i+1,2)-der(i,2))/(epsilon(i+1)-epsilon(i));
+        BBI2=(der(i,2)*epsilon(i+1)-der(i+1,2)*epsilon(i))/(epsilon(i+1)-epsilon(i));
+        auxI2=0.5*AAI2*(epsilon(i+1)^2-epsilon(i)^2)+BBI2*(epsilon(i+1)-epsilon(i));
+        I2=I2+auxI2;
+        %J1
+        AAJ1=(der(i+1,3)-der(i,3))/(epsilon(i+1)-epsilon(i));
+        BBJ1=(der(i,3)*epsilon(i+1)-der(i+1,3)*epsilon(i))/(epsilon(i+1)-epsilon(i));
+        auxJ1=0.5*AAJ1*(epsilon(i+1)^2-epsilon(i)^2)+BBJ1*(epsilon(i+1)-epsilon(i));
+        J1=J1+auxJ1;
+        %J2
+        AAJ2=(der(i+1,4)-der(i,4))/(epsilon(i+1)-epsilon(i));
+        BBJ2=(der(i,4)*epsilon(i+1)-der(i+1,4)*epsilon(i))/(epsilon(i+1)-epsilon(i));
+        auxJ2=0.5*AAJ2*(epsilon(i+1)^2-epsilon(i)^2)+BBJ2*(epsilon(i+1)-epsilon(i));
+        J2=J2+auxJ2;
+    end%fim da integracao
+    
+    qsi_ant=qsi;%guardar o valor antigo de qsi
+    
+    if(parametro=='T')
+    %se o parametro escolhido for a tracao requerida de projeto:
+    qsi=(I1/(2*I2))-((I1/(2*I2))^2-Tc/I2)^0.5;%calcular o valor novo
+    Pc=J1*qsi+J2*qsi^2;%calcular o coeficiente de potencia
+    
+    elseif(parametro=='P')
+%    Se o parametro escolhido for a potencia disponivel de projeto:
+        qsi=-(J1/(2*J2))+((J1/(2*J2))^2+Pc/J2)^0.5;%calcular o valor novo
+        Tc=I1*qsi-I2*qsi^2;%calcular o coeficiente de tracao
+    end
+    erro_qsi=abs(qsi-qsi_ant);%calcular erro de qsi para decisao do while
+   
+end%fim do laço while
+
+%% calculo dos parametros globais
+Pr=Pc*(ro*(Vo^3)*A)*0.5;%potencia requerida
+Tr=Tc*(ro*(Vo^2)*A)*0.5;%tracao desenvolvida pela helice
+eta=Tc/Pc;%eficiencia da helice
+M=Pr/W;%torque requerido pela helice
+
+u1=((2*Tr/(ro*A))+Vo^2)^0.5%velodidade de saida (disco atuador)
+u=0.5*(Vo+u1)%veloidade na helice (disco atuador)
+eta_t=1/(1+(u1-Vo)/(2*Vo));%eficiencia teorica (disco atuador)
+P_1m=ro*9.81*1;
+dtP=Tr/A;%diferenca de pressao entre a helice\
+Pmt=P_1m-dtP/2;
+Pjs=Pmt+dtP;
+Pvap=2300;
+H=(Pvap+dtP/2)*100/(ro*9.81)
+
+%armazenar e organizar resultados globais
+data=dataset({res 'i','r','corda','twist','fi','Cl','L_D','Re','Ma','a','a_l','Vrel'});
+auto=(3.6/(Pr/11.1)*120);
+resg=[Tr M Pr eta_t eta Vo u u1 dtP auto];
+resglobal=dataset({resg 'Tracao','Torque','Potencia','eta_t','eta','V','u','u1','dltP','Autnm'});
+
+end%fim da funcao (o retorno é automatico)
